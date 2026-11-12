@@ -15,12 +15,17 @@ final class AzureErrors
     }
 
     /**
-     * Configuration errors (e.g. a wrong client secret) don't go away on retry. A token refresh that fails inside the
-     * SDK comes back as a StorageException with the original exception as the cause, so the whole chain is checked.
+     * Configuration errors (e.g. a wrong client secret) and errors of Entra ID that are not temporary don't go away on
+     * retry. A token request that fails inside the SDK comes back as a StorageException with the original exception as
+     * the cause, so the whole chain is checked. Other errors are retried, as before.
      */
     static boolean isRetryable(Throwable exception)
     {
-        return findConfigException(exception) == null;
+        if (findConfigException(exception) != null) {
+            return false;
+        }
+        ServicePrincipalTokenProvider.TokenRequestException tokenError = findTokenRequestException(exception);
+        return tokenError == null || tokenError instanceof ServicePrincipalTokenProvider.RetryableTokenException;
     }
 
     /**
@@ -51,7 +56,12 @@ final class AzureErrors
                 endSentence(message).append(" Caused by: ").append(inner.getMessage());
             }
             int status = storageException.getHttpStatusCode();
-            if (status == 401 || status == 403) {
+            if ("AuthorizationPermissionMismatch".equals(storageException.getErrorCode())
+                    || "AuthorizationResourceTypeMismatch".equals(storageException.getErrorCode())) {
+                endSentence(message).append(" The credentials are valid but not allowed to do this: give the service principal "
+                        + "a data role that can write blobs (e.g. Storage Blob Data Contributor), or use a SAS token with the needed permissions.");
+            }
+            else if (status == 401 || status == 403) {
                 endSentence(message).append(" Check the credentials for 'auth_method' (wrong or expired key or SAS token, or missing role or permission).");
             }
             return new DataException(message.toString(), storageException);
@@ -63,9 +73,23 @@ final class AzureErrors
     }
 
     /**
-     * True when the request was not sent, because something failed while preparing it: the SDK catches an exception
-     * thrown before signing (e.g. while getting the access token) and throws a StorageException with status 306 and
-     * the original exception as the cause.
+     * The error to show after the retries gave up: the last failure, because the retry library reports the first one
+     * (e.g. a temporary error first, and then a wrong client secret that is not retried).
+     */
+    static RuntimeException giveUpError(Throwable firstFailure, Throwable lastFailure)
+    {
+        Throwable failure = lastFailure != null ? lastFailure : firstFailure;
+        RuntimeException error = toUserException(failure);
+        if (firstFailure != null && firstFailure != failure && error != firstFailure) {
+            error.addSuppressed(firstFailure);
+        }
+        return error;
+    }
+
+    /**
+     * True when the request was not sent, because something failed while preparing or signing it: the SDK catches
+     * such an exception (e.g. one thrown while getting the access token) and throws a StorageException with status 306
+     * and the original exception as the cause.
      */
     static boolean failedBeforeSending(StorageException exception)
     {

@@ -31,13 +31,13 @@ First, create Azure [Storage Account](https://azure.microsoft.com/en-us/document
 
 - `account_key`: the storage account's access key.
 - `service_principal`: a Microsoft Entra ID application with a client secret. Give it a role that can write blobs, e.g. "Storage Blob Data Contributor", on the storage account or the container. The access token is refreshed automatically during long transfers.
-- `sas_token`: an account SAS or a container SAS that allows writing (and creating) blobs. A SAS has an expiry time: the transfer fails after it.
+- `sas_token`: an account SAS or a container SAS that allows writing (and creating) blobs (`w`, `c`; also `d` so that the uncommitted blocks of a failed `BLOCK_BLOB` upload can be deleted). A SAS has an expiry time: the transfer fails after it.
 
 ### Auto create container
 
 container will create automatically when container doesn't exists.
 
-If the credentials are not allowed to read the container (e.g. a container SAS without read permission, or a role that only allows writing blobs), this check is skipped with a warning, and the upload fails if the container doesn't exist. Creating a container needs a role or SAS that allows it.
+With `service_principal` or `sas_token`, if the credentials cannot read the container's properties (a container SAS never can; nor can an account SAS without the container resource type or the read permission, or a role that only allows writing blobs), this check is skipped with a warning, and the upload fails if the container doesn't exist. If the container doesn't exist and the credentials cannot create it, the transfer fails at the start.
  
 When a container was deleted, a container with same name cannot be created for at least 30 seconds.
 It's a [service specification](https://technet.microsoft.com/en-us/library/dd179408.aspx#Anchor_3) of Azure Blob Storage.
@@ -72,7 +72,7 @@ out:
   client_secret: my-client-secret
   # or
   # auth_method: sas_token
-  # sas_token: sv=2022-11-02&ss=b&srt=co&sp=rwlc&se=2026-12-31T00:00:00Z&spr=https&sig=...
+  # sas_token: sv=2022-11-02&ss=b&srt=co&sp=rwdlc&se=2026-12-31T00:00:00Z&spr=https&sig=...
   container: my-container
   path_prefix: logs/csv-
   file_ext: csv

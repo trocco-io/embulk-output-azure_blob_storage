@@ -18,7 +18,8 @@ targetCompatibility = 1.8
 
 group = "trocco-io"
 description = "Dumps records to Microsoft Azure Blob Storage."
-// The version comes from the tag (e.g. v0.2.1.trocco.0.1.0) so that the gem published from a tag has its name
+// The version comes from the tag (e.g. v0.2.1.trocco.0.1.0, without the leading v) when HEAD is exactly at that tag;
+// other builds get 0.0.0.<commit hash>.
 version = {
     def vd = versionDetails()
     if (vd.commitDistance == 0 && vd.lastTag ==~ /^v?[0-9]+\.[0-9]+\.[0-9]+([.-][.a-zA-Z0-9-]+)?/) {

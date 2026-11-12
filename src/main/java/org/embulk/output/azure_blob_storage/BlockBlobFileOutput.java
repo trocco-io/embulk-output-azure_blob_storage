@@ -40,7 +40,7 @@ public class BlockBlobFileOutput implements TransactionalFileOutput
     private final Logger logger = LoggerFactory.getLogger(getClass());
     private final int blockSize;
     private final CloudBlobContainer container;
-    // A new context for each request (null for account_key). service_principal sets its access token through it.
+    // A new context for each request (null except for service_principal, which sets its access token through it)
     private final Supplier<OperationContext> operationContext;
     private final String pathPrefix;
     private final String sequenceFormat;
@@ -171,26 +171,48 @@ public class BlockBlobFileOutput implements TransactionalFileOutput
     {
         // commit blob
         if (!blocks.isEmpty()) {
-            try {
-                blockBlob.commitBlockList(blocks, null, null, operationContext.get());
-                logger.info("Committed file: {}", blockBlob.getName());
-                blocks.clear();
-            }
-            catch (StorageException e) {
-                throw AzureErrors.toUserException(e);
+            // Retried like the blocks: committing the same list again is safe
+            runWithRetry("commit", () -> blockBlob.commitBlockList(blocks, null, null, operationContext.get()));
+            logger.info("Committed file: {}", blockBlob.getName());
+            blocks.clear();
+        }
+    }
+
+    private void uploadFile()
+    {
+        if (file.length() == 0) {
+            logger.warn("Skipped empty block {}", file.getName());
+            return;
+        }
+
+        try {
+            runWithRetry("put", () -> {
+                String blockId = Base64.getEncoder().encodeToString(String.format("%10d", blockIndex).getBytes());
+                try (BufferedInputStream in = new BufferedInputStream(new FileInputStream(file))) {
+                    blockBlob.uploadBlock(blockId, in, file.length(), null, null, operationContext.get());
+                }
+                blocks.add(new BlockEntry(blockId, BlockSearchMode.UNCOMMITTED));
+                logger.info("Uploaded block file: {}, id: {}, size ~ {}kb", file.getName(), blockId, file.length() / 1024);
+                blockIndex++;
+            });
+        }
+        finally {
+            if (file.exists() && !file.delete()) {
+                logger.warn("Couldn't delete local file " + file.getAbsolutePath());
             }
         }
     }
 
-    private Void uploadFile()
+    private interface Request
     {
-        if (file.length() == 0) {
-            logger.warn("Skipped empty block {}", file.getName());
-            return null;
-        }
+        void run() throws IOException, StorageException;
+    }
 
+    private void runWithRetry(final String operation, final Request request)
+    {
+        final Exception[] lastFailure = new Exception[1];
         try {
-            return RetryExecutor.builder()
+            RetryExecutor.builder()
                     .withRetryLimit(maxConnectionRetry)
                     .withInitialRetryWaitMillis(500)
                     .withMaxRetryWaitMillis(30 * 1000)
@@ -199,12 +221,7 @@ public class BlockBlobFileOutput implements TransactionalFileOutput
                         @Override
                         public Void call() throws IOException, StorageException
                         {
-                            String blockId = Base64.getEncoder().encodeToString(String.format("%10d", blockIndex).getBytes());
-                            blockBlob.uploadBlock(blockId, new BufferedInputStream(new FileInputStream(file)), file.length(),
-                                    null, null, operationContext.get());
-                            blocks.add(new BlockEntry(blockId, BlockSearchMode.UNCOMMITTED));
-                            logger.info("Uploaded block file: {}, id: {}, size ~ {}kb", file.getName(), blockId, file.length() / 1024);
-                            blockIndex++;
+                            request.run();
                             return null;
                         }
 
@@ -221,8 +238,8 @@ public class BlockBlobFileOutput implements TransactionalFileOutput
                             if (exception instanceof FileNotFoundException || exception instanceof URISyntaxException || exception instanceof ConfigException) {
                                 throw new RetryGiveupException(exception);
                             }
-                            String message = String.format("Azure Blob Storage put request failed. Retrying %d/%d after %d seconds. Message: %s",
-                                    retryCount, retryLimit, retryWait / 1000, exception.getMessage());
+                            String message = String.format("Azure Blob Storage %s request failed. Retrying %d/%d after %d seconds. Message: %s",
+                                    operation, retryCount, retryLimit, retryWait / 1000, exception.getMessage());
                             if (retryCount % 3 == 0) {
                                 logger.warn(message, exception);
                             }
@@ -234,19 +251,15 @@ public class BlockBlobFileOutput implements TransactionalFileOutput
                         @Override
                         public void onGiveup(Exception firstException, Exception lastException)
                         {
+                            lastFailure[0] = lastException;
                         }
                     });
         }
         catch (RetryGiveupException ex) {
-            throw AzureErrors.toUserException(ex.getCause());
+            throw AzureErrors.giveUpError(ex.getCause(), lastFailure[0]);
         }
         catch (InterruptedException ex) {
             throw new RuntimeException(ex);
-        }
-        finally {
-            if (file.exists() && !file.delete()) {
-                logger.warn("Couldn't delete local file " + file.getAbsolutePath());
-            }
         }
     }
 
@@ -260,6 +273,9 @@ public class BlockBlobFileOutput implements TransactionalFileOutput
     @Override
     public void abort()
     {
+        if (blockBlob == null) {
+            return;
+        }
         try {
             // delete if blob not exist <=> delete all uncommitted blocks
             // if blob exist, leave it as is. uncommitted blocks will be garbage collected in 1 week.
@@ -267,8 +283,10 @@ public class BlockBlobFileOutput implements TransactionalFileOutput
                 blockBlob.delete(DeleteSnapshotsOption.NONE, null, null, operationContext.get());
             }
         }
-        catch (StorageException e) {
-            throw new DataException(e);
+        catch (StorageException | RuntimeException e) {
+            // abort() runs after the task failed: report its error, not this one. Uncommitted blocks are removed by
+            // Azure after a week anyway. With a SAS token or a role that cannot read or delete blobs, this fails.
+            logger.warn("Couldn't delete the uncommitted blocks of {}: {}", blockBlob.getName(), e.getMessage());
         }
     }
 

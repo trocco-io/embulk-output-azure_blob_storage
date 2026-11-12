@@ -36,7 +36,7 @@ public class BlobFileOutput implements TransactionalFileOutput
 {
     private final Logger logger = LoggerFactory.getLogger(AzureBlobStorageFileOutputPlugin.class);
     private final CloudBlobClient client;
-    // A new context for each request (null for account_key). service_principal sets its access token through it.
+    // A new context for each request (null except for service_principal, which sets its access token through it)
     private final Supplier<OperationContext> operationContext;
     private final String containerName;
     private final String pathPrefix;
@@ -129,6 +129,7 @@ public class BlobFileOutput implements TransactionalFileOutput
             return null;
         }
 
+        final Exception[] lastFailure = new Exception[1];
         try {
             return RetryExecutor.builder()
                     .withRetryLimit(maxConnectionRetry)
@@ -175,11 +176,12 @@ public class BlobFileOutput implements TransactionalFileOutput
                         @Override
                         public void onGiveup(Exception firstException, Exception lastException)
                         {
+                            lastFailure[0] = lastException;
                         }
                     });
         }
         catch (RetryGiveupException ex) {
-            throw AzureErrors.toUserException(ex.getCause());
+            throw AzureErrors.giveUpError(ex.getCause(), lastFailure[0]);
         }
         catch (InterruptedException ex) {
             throw new RuntimeException(ex);

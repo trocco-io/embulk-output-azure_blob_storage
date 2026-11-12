@@ -36,9 +36,9 @@ public class ServicePrincipalTokenProvider
     static final long DEFAULT_EXPIRES_IN_SECONDS = 3600L;
     // Attempts for errors that may go away on retry (network errors, 429 and 5xx).
     static final int MAX_ATTEMPTS = 3;
-    // After a failed refresh, keep using the current token for this long before trying again. Without it, every
-    // request would run all the attempts again while holding the lock, which nearly stops the transfer while Entra ID
-    // is unavailable.
+    // After a failure, don't ask Entra ID again for this long: return the current token while it is valid, or the same
+    // error. Without it, every request of every task sharing this provider would run all the attempts again while
+    // holding the lock, which nearly stops the transfer (or makes it look hung) while Entra ID is unavailable.
     static final long REFRESH_RETRY_INTERVAL_MILLIS = 30 * 1000L;
     private static final long RETRY_WAIT_MILLIS = 1000L;
     private static final int TIMEOUT_MILLIS = 30 * 1000;
@@ -54,8 +54,9 @@ public class ServicePrincipalTokenProvider
 
     private String accessToken;
     private long expiresAtMillis;
-    // Time of the last failed refresh, or -1 after a successful one
-    private long lastRefreshFailedAtMillis = -1;
+    // The error of the last failed request for a token and when it failed, or null after a successful one
+    private RuntimeException lastFailure;
+    private long lastFailedAtMillis;
 
     public ServicePrincipalTokenProvider(String tenantId, String clientId, String clientSecret)
     {
@@ -77,8 +78,9 @@ public class ServicePrincipalTokenProvider
     /**
      * Returns a valid access token, getting a new one when there is none yet or the current one is about to expire.
      * If getting a new one fails while the current one is still valid, the current one is returned, so a temporary
-     * error of Entra ID does not stop a transfer. After such a failure, the current token is returned without asking
-     * Entra ID again for REFRESH_RETRY_INTERVAL_MILLIS. Once the token has expired, a new one is always requested.
+     * error of Entra ID does not stop a transfer. After a failure, Entra ID is not asked again for
+     * REFRESH_RETRY_INTERVAL_MILLIS: the current token is returned while it is valid, or else the same error is thrown.
+     * The callers retry with backoff (max_connection_retry), so a later retry asks Entra ID again.
      */
     public synchronized String getToken()
     {
@@ -86,17 +88,21 @@ public class ServicePrincipalTokenProvider
         if (accessToken != null && now < expiresAtMillis - REFRESH_MARGIN_MILLIS) {
             return accessToken;
         }
-        if (hasValidToken(now) && lastRefreshFailedAtMillis >= 0
-                && now < lastRefreshFailedAtMillis + REFRESH_RETRY_INTERVAL_MILLIS) {
-            return accessToken;
+        if (lastFailure != null && now < lastFailedAtMillis + REFRESH_RETRY_INTERVAL_MILLIS) {
+            if (hasValidToken(now)) {
+                return accessToken;
+            }
+            throw lastFailure;
         }
         try {
             fetchToken();
-            lastRefreshFailedAtMillis = -1;
+            lastFailure = null;
         }
-        catch (RuntimeException ex) {
-            lastRefreshFailedAtMillis = clock.getAsLong();
-            if (hasValidToken(now)) {
+        catch (TokenRequestException | ConfigException ex) {
+            lastFailure = ex;
+            lastFailedAtMillis = clock.getAsLong();
+            // The attempts may have taken a while, so check the token at the time they ended
+            if (hasValidToken(lastFailedAtMillis)) {
                 log.warn("Failed to refresh the access token. Keep using the current token until it expires: {}", ex.getMessage());
                 return accessToken;
             }
@@ -158,6 +164,15 @@ public class ServicePrincipalTokenProvider
             if (status == 429 || status >= 500) {
                 throw new RetryableTokenException("Microsoft Entra ID returned a temporary error (" + detail + ")", null);
             }
+            if (status == 200) {
+                throw new TokenRequestException("The response for an access token has no access_token (" + detail + "). "
+                        + "Check that nothing between this host and Microsoft Entra ID (e.g. a gateway) changes the response.", null);
+            }
+            if (!json.hasNonNull("error")) {
+                // Not an error of Entra ID (it always has "error"), e.g. an error page of a gateway on the way
+                throw new TokenRequestException("Failed to get an access token from Microsoft Entra ID (" + detail
+                        + "). The response was not from Microsoft Entra ID.", null);
+            }
             if (status == 400 || status == 401) {
                 throw new ConfigException("Failed to get an access token from Microsoft Entra ID (" + detail + "). "
                         + "Check the tenant ID, client ID and client secret.");
@@ -182,7 +197,8 @@ public class ServicePrincipalTokenProvider
                 + "&scope=" + URLEncoder.encode(STORAGE_SCOPE, "UTF-8");
     }
 
-    // An error page from a proxy or gateway may not be JSON. Treat it as empty, so the status is still reported.
+    // A non-JSON body (e.g. an error page of a gateway in front of Entra ID) is treated as empty, so the status is
+    // still reported.
     private static JsonNode parseJson(String body)
     {
         if (body.isEmpty()) {

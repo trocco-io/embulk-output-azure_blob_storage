@@ -68,7 +68,7 @@ public class TestAzureBlobClientFactory
     }
 
     // The token is not fetched when the client is created, but right before each request is signed. So getting the
-    // first token is also covered by the retry of the request.
+    // first token is also covered by the plugin's retry of the request (max_connection_retry).
     @Test
     public void testServicePrincipalSetsTheTokenBeforeEachRequest()
     {
@@ -86,11 +86,12 @@ public class TestAzureBlobClientFactory
         // The SDK fires this event right before it signs a request.
         op.getSendingRequestEventHandler().fireEvent(new SendingRequestEvent(op, null, null));
         assertEquals("token-1", credentials.getToken());
-        factory.createOperationContext().getSendingRequestEventHandler().fireEvent(new SendingRequestEvent(op, null, null));
+        OperationContext next = factory.createOperationContext();
+        next.getSendingRequestEventHandler().fireEvent(new SendingRequestEvent(next, null, null));
         assertEquals("token-2", credentials.getToken());
     }
 
-    // resume() and open() read the task back from the TaskSource.
+    // open() reads the task back from the TaskSource.
     @Test
     public void testAuthMethodSurvivesTaskSourceRoundTrip()
     {
@@ -104,7 +105,22 @@ public class TestAzureBlobClientFactory
         assertEquals(AuthMethod.ACCOUNT_KEY, restored.getAuthMethod());
     }
 
-    // Providers are shared per service principal and secret, so that a job never uses another job's token.
+    // open() builds the client factory from the task read back from the TaskSource, so every option has to survive it
+    @Test
+    public void testCredentialsSurviveTaskSourceRoundTrip()
+    {
+        PluginTask task = task(baseConfig().set("auth_method", "service_principal").set("account_key", "a2V5")
+                .set("tenant_id", "t").set("client_id", "c").set("client_secret", "s").set("sas_token", "sv=1&sig=abc"));
+        PluginTask restored = CONFIG_MAPPER_FACTORY.createTaskMapper().map(task.toTaskSource(), PluginTask.class);
+        assertEquals("a2V5", restored.getAccountKey().get());
+        assertEquals("t", restored.getTenantId().get());
+        assertEquals("c", restored.getClientId().get());
+        assertEquals("s", restored.getClientSecret().get());
+        assertEquals("sv=1&sig=abc", restored.getSasToken().get());
+    }
+
+    // Providers are shared per tenant, client and secret, so a different service principal or a changed secret never
+    // reuses another's token.
     @Test
     public void testSharedTokenProviderKey()
     {

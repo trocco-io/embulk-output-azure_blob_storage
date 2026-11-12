@@ -23,7 +23,7 @@ public enum AuthMethod
         this.value = value;
     }
 
-    // Written to the TaskSource as the config value, so that it can be read back by of() in resume() and open().
+    // Written to the TaskSource as the config value, so that open() can read it back with of().
     @JsonValue
     public String getValue()
     {

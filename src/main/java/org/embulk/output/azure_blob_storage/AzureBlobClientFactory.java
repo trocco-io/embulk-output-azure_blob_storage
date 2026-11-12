@@ -22,8 +22,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * - account_key: uses the same connection string and credentials as before.
  * - sas_token: the SAS token is sent as the query string of each request.
  * - service_principal: an access token from Microsoft Entra ID is sent as a bearer token. The token is set right
- *   before each request is signed, so the first token is also fetched inside the request (and its retries), and a
- *   token about to expire is refreshed during long transfers.
+ *   before each request is signed, so it is fetched inside each request attempt, and a token about to expire is
+ *   refreshed during long transfers. A failed token request is not retried by the SDK (it fails with status 306), but
+ *   by the plugin's retry of the upload (max_connection_retry).
  */
 public class AzureBlobClientFactory
 {
@@ -66,6 +67,11 @@ public class AzureBlobClientFactory
         }
     }
 
+    public AuthMethod getAuthMethod()
+    {
+        return authMethod;
+    }
+
     public CloudBlobClient createClient()
     {
         switch (authMethod) {
@@ -79,8 +85,8 @@ public class AzureBlobClientFactory
     }
 
     /**
-     * Returns a new context to pass to requests. It is null except for service_principal, which is the same as before
-     * this class was added. The SDK keeps the result of every request in the context, so create a new one for each
+     * Returns a new context to pass to requests. It is null except for service_principal (null is what the requests
+     * used before this class was added). The SDK keeps the result of every request in the context, so create a new one for each
      * request (or group of requests) instead of sharing one for a whole transfer.
      */
     public OperationContext createOperationContext()
@@ -146,7 +152,8 @@ public class AzureBlobClientFactory
         }
     }
 
-    // The Azure portal shows a SAS token with a leading "?", which the SDK does not accept.
+    // The Azure portal shows a SAS token with a leading "?". The SDK's query parser tolerates it, but it is removed so
+    // that the token is exactly the query string.
     static String normalizeSasToken(String sasToken)
     {
         String token = sasToken.trim();
