@@ -1,3 +1,8 @@
+## Unreleased (trocco)
+* [new feature] Support `auth_method` option: `service_principal` (Microsoft Entra ID client credentials) and `sas_token`, in addition to `account_key`. Existing configurations keep using `account_key`.
+* [maintenance] Configuration errors (e.g. a wrong client secret) are no longer retried.
+* [maintenance] The final error of a failed upload includes the HTTP status, the error code and Azure's error details.
+
 ## 0.2.1 - 2022-03-30
 * [maintenance] Remove deprecated functions [#21](https://github.com/embulk/embulk-output-azure_blob_storage/pull/21)
 

@@ -1,11 +1,13 @@
 package org.embulk.output.azure_blob_storage;
 
+import com.microsoft.azure.storage.OperationContext;
 import com.microsoft.azure.storage.StorageException;
 import com.microsoft.azure.storage.blob.BlockEntry;
 import com.microsoft.azure.storage.blob.BlockSearchMode;
 import com.microsoft.azure.storage.blob.CloudBlobClient;
 import com.microsoft.azure.storage.blob.CloudBlobContainer;
 import com.microsoft.azure.storage.blob.CloudBlockBlob;
+import com.microsoft.azure.storage.blob.DeleteSnapshotsOption;
 import org.embulk.config.ConfigException;
 import org.embulk.config.TaskReport;
 import org.embulk.spi.Buffer;
@@ -29,6 +31,7 @@ import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.function.Supplier;
 
 import static org.embulk.output.azure_blob_storage.AzureBlobStorageFileOutputPlugin.CONFIG_MAPPER_FACTORY;
 
@@ -37,6 +40,8 @@ public class BlockBlobFileOutput implements TransactionalFileOutput
     private final Logger logger = LoggerFactory.getLogger(getClass());
     private final int blockSize;
     private final CloudBlobContainer container;
+    // A new context for each request (null for account_key). service_principal sets its access token through it.
+    private final Supplier<OperationContext> operationContext;
     private final String pathPrefix;
     private final String sequenceFormat;
     private final String pathSuffix;
@@ -52,6 +57,13 @@ public class BlockBlobFileOutput implements TransactionalFileOutput
 
     public BlockBlobFileOutput(CloudBlobClient client, AzureBlobStorageFileOutputPlugin.PluginTask task, int taskIndex, final TempFileSpace tempFileSpace)
     {
+        this(client, () -> null, task, taskIndex, tempFileSpace);
+    }
+
+    public BlockBlobFileOutput(CloudBlobClient client, Supplier<OperationContext> operationContext,
+                               AzureBlobStorageFileOutputPlugin.PluginTask task, int taskIndex, final TempFileSpace tempFileSpace)
+    {
+        this.operationContext = operationContext;
         try {
             this.container = client.getContainerReference(task.getContainer());
             this.tempFileSpace = tempFileSpace;
@@ -160,12 +172,12 @@ public class BlockBlobFileOutput implements TransactionalFileOutput
         // commit blob
         if (!blocks.isEmpty()) {
             try {
-                blockBlob.commitBlockList(blocks);
+                blockBlob.commitBlockList(blocks, null, null, operationContext.get());
                 logger.info("Committed file: {}", blockBlob.getName());
                 blocks.clear();
             }
             catch (StorageException e) {
-                throw new DataException(e);
+                throw AzureErrors.toUserException(e);
             }
         }
     }
@@ -188,7 +200,8 @@ public class BlockBlobFileOutput implements TransactionalFileOutput
                         public Void call() throws IOException, StorageException
                         {
                             String blockId = Base64.getEncoder().encodeToString(String.format("%10d", blockIndex).getBytes());
-                            blockBlob.uploadBlock(blockId, new BufferedInputStream(new FileInputStream(file)), file.length());
+                            blockBlob.uploadBlock(blockId, new BufferedInputStream(new FileInputStream(file)), file.length(),
+                                    null, null, operationContext.get());
                             blocks.add(new BlockEntry(blockId, BlockSearchMode.UNCOMMITTED));
                             logger.info("Uploaded block file: {}, id: {}, size ~ {}kb", file.getName(), blockId, file.length() / 1024);
                             blockIndex++;
@@ -198,7 +211,7 @@ public class BlockBlobFileOutput implements TransactionalFileOutput
                         @Override
                         public boolean isRetryableException(Exception exception)
                         {
-                            return true;
+                            return AzureErrors.isRetryable(exception);
                         }
 
                         @Override
@@ -225,7 +238,7 @@ public class BlockBlobFileOutput implements TransactionalFileOutput
                     });
         }
         catch (RetryGiveupException ex) {
-            throw new RuntimeException(ex.getCause());
+            throw AzureErrors.toUserException(ex.getCause());
         }
         catch (InterruptedException ex) {
             throw new RuntimeException(ex);
@@ -250,8 +263,8 @@ public class BlockBlobFileOutput implements TransactionalFileOutput
         try {
             // delete if blob not exist <=> delete all uncommitted blocks
             // if blob exist, leave it as is. uncommitted blocks will be garbage collected in 1 week.
-            if (!blockBlob.exists()) {
-                blockBlob.delete();
+            if (!blockBlob.exists(null, null, operationContext.get())) {
+                blockBlob.delete(DeleteSnapshotsOption.NONE, null, null, operationContext.get());
             }
         }
         catch (StorageException e) {

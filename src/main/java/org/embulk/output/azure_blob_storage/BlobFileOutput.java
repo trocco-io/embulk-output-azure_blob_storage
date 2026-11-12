@@ -1,5 +1,6 @@
 package org.embulk.output.azure_blob_storage;
 
+import com.microsoft.azure.storage.OperationContext;
 import com.microsoft.azure.storage.StorageException;
 import com.microsoft.azure.storage.blob.CloudBlobClient;
 import com.microsoft.azure.storage.blob.CloudBlobContainer;
@@ -23,6 +24,7 @@ import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.net.URISyntaxException;
+import java.util.function.Supplier;
 
 import static org.embulk.output.azure_blob_storage.AzureBlobStorageFileOutputPlugin.CONFIG_MAPPER_FACTORY;
 import static org.embulk.output.azure_blob_storage.AzureBlobStorageFileOutputPlugin.PluginTask;
@@ -34,6 +36,8 @@ public class BlobFileOutput implements TransactionalFileOutput
 {
     private final Logger logger = LoggerFactory.getLogger(AzureBlobStorageFileOutputPlugin.class);
     private final CloudBlobClient client;
+    // A new context for each request (null for account_key). service_principal sets its access token through it.
+    private final Supplier<OperationContext> operationContext;
     private final String containerName;
     private final String pathPrefix;
     private final String sequenceFormat;
@@ -48,7 +52,14 @@ public class BlobFileOutput implements TransactionalFileOutput
 
     public BlobFileOutput(CloudBlobClient client, PluginTask task, int taskIndex, final TempFileSpace tempFileSpace)
     {
+        this(client, () -> null, task, taskIndex, tempFileSpace);
+    }
+
+    public BlobFileOutput(CloudBlobClient client, Supplier<OperationContext> operationContext, PluginTask task, int taskIndex,
+                          final TempFileSpace tempFileSpace)
+    {
         this.client = client;
+        this.operationContext = operationContext;
         this.containerName = task.getContainer();
         this.taskIndex = taskIndex;
         this.pathPrefix = task.getPathPrefix();
@@ -132,7 +143,7 @@ public class BlobFileOutput implements TransactionalFileOutput
                             CloudBlockBlob blob = container.getBlockBlobReference(filePath);
                             logger.info("Upload start {} to {}", file.getAbsolutePath(), filePath);
                             try (BufferedInputStream in = new BufferedInputStream(new FileInputStream(file))) {
-                                blob.upload(in, file.length());
+                                blob.upload(in, file.length(), null, null, operationContext.get());
                                 logger.info("Upload completed {} to {}", file.getAbsolutePath(), filePath);
                             }
                             return null;
@@ -141,7 +152,7 @@ public class BlobFileOutput implements TransactionalFileOutput
                         @Override
                         public boolean isRetryableException(Exception exception)
                         {
-                            return true;
+                            return AzureErrors.isRetryable(exception);
                         }
 
                         @Override
@@ -168,7 +179,7 @@ public class BlobFileOutput implements TransactionalFileOutput
                     });
         }
         catch (RetryGiveupException ex) {
-            throw new RuntimeException(ex.getCause());
+            throw AzureErrors.toUserException(ex.getCause());
         }
         catch (InterruptedException ex) {
             throw new RuntimeException(ex);
