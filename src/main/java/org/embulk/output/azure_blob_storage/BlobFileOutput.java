@@ -30,7 +30,7 @@ import static org.embulk.output.azure_blob_storage.AzureBlobStorageFileOutputPlu
 import static org.embulk.output.azure_blob_storage.AzureBlobStorageFileOutputPlugin.PluginTask;
 
 /**
- * Extract class from previous version of {@link AzureBlobStorageFileOutputPlugin} without logic modification
+ * Writes each file of a task to a local temporary file, and uploads it as a block blob when the file is finished
  */
 public class BlobFileOutput implements TransactionalFileOutput
 {
