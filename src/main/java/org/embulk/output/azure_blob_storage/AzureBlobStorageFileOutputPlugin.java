@@ -1,6 +1,5 @@
 package org.embulk.output.azure_blob_storage;
 
-import com.microsoft.azure.storage.CloudStorageAccount;
 import com.microsoft.azure.storage.StorageException;
 import com.microsoft.azure.storage.blob.BlobType;
 import com.microsoft.azure.storage.blob.CloudBlobClient;
@@ -12,6 +11,7 @@ import org.embulk.config.TaskReport;
 import org.embulk.config.TaskSource;
 import org.embulk.spi.Exec;
 import org.embulk.spi.FileOutputPlugin;
+import org.embulk.spi.TempFileSpace;
 import org.embulk.spi.TransactionalFileOutput;
 import org.embulk.util.config.Config;
 import org.embulk.util.config.ConfigDefault;
@@ -22,8 +22,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.net.URISyntaxException;
-import java.security.InvalidKeyException;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 
 public class AzureBlobStorageFileOutputPlugin
         implements FileOutputPlugin
@@ -34,8 +35,31 @@ public class AzureBlobStorageFileOutputPlugin
         @Config("account_name")
         String getAccountName();
 
+        // How to authenticate: account_key (default), service_principal or sas_token
+        @Config("auth_method")
+        @ConfigDefault("\"account_key\"")
+        AuthMethod getAuthMethod();
+
+        // Optional since auth_method was added. Required when auth_method is account_key.
         @Config("account_key")
-        String getAccountKey();
+        @ConfigDefault("null")
+        Optional<String> getAccountKey();
+
+        @Config("tenant_id")
+        @ConfigDefault("null")
+        Optional<String> getTenantId();
+
+        @Config("client_id")
+        @ConfigDefault("null")
+        Optional<String> getClientId();
+
+        @Config("client_secret")
+        @ConfigDefault("null")
+        Optional<String> getClientSecret();
+
+        @Config("sas_token")
+        @ConfigDefault("null")
+        Optional<String> getSasToken();
 
         @Config("container")
         String getContainer();
@@ -64,6 +88,18 @@ public class AzureBlobStorageFileOutputPlugin
 
     private static final Logger log =  LoggerFactory.getLogger(AzureBlobStorageFileOutputPlugin.class);
 
+    // Returned when the credentials are valid but cannot read the container's properties. Writing blobs may still be
+    // allowed, so the container check is skipped.
+    // - sas_token: a container (service) SAS never can (AuthorizationFailure), nor can an account SAS without the
+    //   container resource type (AuthorizationResourceTypeMismatch) or the read permission (AuthorizationPermissionMismatch)
+    // - service_principal: a role that only allows writing blobs (AuthorizationPermissionMismatch)
+    // AuthorizationFailure is also returned when a firewall or network rule blocks the request, so it is skipped only
+    // for sas_token, where a container SAS always gets it. account_key is never skipped, as before.
+    private static final List<String> SAS_TOKEN_PERMISSION_ERROR_CODES = Arrays.asList(
+            "AuthorizationPermissionMismatch", "AuthorizationResourceTypeMismatch", "AuthorizationFailure");
+    private static final List<String> SERVICE_PRINCIPAL_PERMISSION_ERROR_CODES = Arrays.asList(
+            "AuthorizationPermissionMismatch");
+
     public static final ConfigMapperFactory CONFIG_MAPPER_FACTORY = ConfigMapperFactory
         .builder()
         .addDefaultModules()
@@ -75,21 +111,71 @@ public class AzureBlobStorageFileOutputPlugin
                                   FileOutputPlugin.Control control)
     {
         PluginTask task = CONFIG_MAPPER.map(config, PluginTask.class);
+        AzureBlobClientFactory.validate(task);
 
+        createContainerIfNotExists(new AzureBlobClientFactory(task), task.getContainer());
+
+        return resume(task.toTaskSource(), taskCount, control);
+    }
+
+    static void createContainerIfNotExists(AzureBlobClientFactory clientFactory, String containerName)
+    {
+        CloudBlobContainer container;
         try {
-            CloudBlobClient blobClient = newAzureClient(task.getAccountName(), task.getAccountKey());
-            String containerName = task.getContainer();
-            CloudBlobContainer container = blobClient.getContainerReference(containerName);
-            if (!container.exists()) {
-                log.info("container {} doesn't exist and is created.", containerName);
-                container.createIfNotExists();
-            }
+            container = clientFactory.createClient().getContainerReference(containerName);
         }
         catch (StorageException | URISyntaxException ex) {
             throw new ConfigException(ex);
         }
+        boolean exists;
+        try {
+            exists = container.exists(null, null, clientFactory.createOperationContext());
+        }
+        catch (StorageException ex) {
+            if (ex.getHttpStatusCode() == 403 && cannotReadContainer(clientFactory.getAuthMethod(), ex.getErrorCode())) {
+                // Uploading fails later if writing is not allowed or the container doesn't exist.
+                log.warn("Skipped checking that container {} exists, because the credentials are not allowed to read its properties ({}).",
+                        containerName, ex.getErrorCode());
+                return;
+            }
+            throw containerCheckError(ex);
+        }
+        if (exists) {
+            return;
+        }
+        log.info("container {} doesn't exist and is created.", containerName);
+        try {
+            container.createIfNotExists(null, null, clientFactory.createOperationContext());
+        }
+        catch (StorageException ex) {
+            if (ex.getHttpStatusCode() == 403) {
+                throw new ConfigException(String.format("Container %s doesn't exist, and the credentials are not allowed to create it. "
+                        + "Create the container, or use credentials that can create it. (%s)",
+                        containerName, AzureErrors.toUserException(ex).getMessage()), ex);
+            }
+            throw containerCheckError(ex);
+        }
+    }
 
-        return resume(task.toTaskSource(), taskCount, control);
+    private static boolean cannotReadContainer(AuthMethod authMethod, String errorCode)
+    {
+        switch (authMethod) {
+            case SAS_TOKEN:
+                return SAS_TOKEN_PERMISSION_ERROR_CODES.contains(errorCode);
+            case SERVICE_PRINCIPAL:
+                return SERVICE_PRINCIPAL_PERMISSION_ERROR_CODES.contains(errorCode);
+            default:
+                return false;
+        }
+    }
+
+    private static RuntimeException containerCheckError(StorageException ex)
+    {
+        if (AzureErrors.findTokenRequestException(ex) != null) {
+            // Microsoft Entra ID failed (e.g. temporarily), which is not a configuration error
+            return AzureErrors.toUserException(ex);
+        }
+        return new ConfigException(AzureErrors.toUserException(ex).getMessage(), ex);
     }
 
     @Override
@@ -105,35 +191,25 @@ public class AzureBlobStorageFileOutputPlugin
     {
     }
 
-    private static CloudBlobClient newAzureClient(String accountName, String accountKey)
-    {
-        String connectionString = "DefaultEndpointsProtocol=https;" +
-                "AccountName=" + accountName + ";" +
-                "AccountKey=" + accountKey;
-
-        CloudStorageAccount account;
-        try {
-            account = CloudStorageAccount.parse(connectionString);
-        }
-        catch (InvalidKeyException | URISyntaxException ex) {
-            throw new ConfigException(ex.getMessage());
-        }
-        return account.createCloudBlobClient();
-    }
-
     @Override
     public TransactionalFileOutput open(TaskSource taskSource, final int taskIndex)
     {
         final PluginTask task = CONFIG_MAPPER_FACTORY.createTaskMapper().map(taskSource, PluginTask.class);
+        return newOutput(new AzureBlobClientFactory(task), task, taskIndex, Exec.getTempFileSpace());
+    }
+
+    static TransactionalFileOutput newOutput(AzureBlobClientFactory clientFactory, PluginTask task, int taskIndex,
+                                             TempFileSpace tempFileSpace)
+    {
         final BlobType blobType = BlobType.valueOf(task.getBlobType());
-        final CloudBlobClient blobClient = newAzureClient(task.getAccountName(), task.getAccountKey());
+        final CloudBlobClient blobClient = clientFactory.createClient();
 
         // should support multiple blob type in the future.
         switch (blobType) {
             case BLOCK_BLOB:
-                return new BlockBlobFileOutput(blobClient, task, taskIndex, Exec.getTempFileSpace());
+                return new BlockBlobFileOutput(blobClient, clientFactory::createOperationContext, task, taskIndex, tempFileSpace);
             default:
-                return new BlobFileOutput(blobClient, task, taskIndex, Exec.getTempFileSpace());
+                return new BlobFileOutput(blobClient, clientFactory::createOperationContext, task, taskIndex, tempFileSpace);
         }
     }
 }
