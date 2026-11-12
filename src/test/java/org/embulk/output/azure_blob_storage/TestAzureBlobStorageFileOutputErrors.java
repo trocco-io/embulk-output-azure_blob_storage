@@ -25,6 +25,7 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -371,6 +372,47 @@ public class TestAzureBlobStorageFileOutputErrors
         assertEquals(Collections.singletonList("PUT /myaccount/my-container/data/000.00.csv"), requests);
     }
 
+    // --- several files in a task
+
+    // Before, only the last file of a task was uploaded, and the others were left as local temporary files
+    @Test
+    public void testEveryFileOfATaskIsUploaded() throws IOException
+    {
+        PluginTask task = sasTask(1, SAS_TOKEN);
+        File tempDir = testFolder.newFolder();
+        TransactionalFileOutput output = AzureBlobStorageFileOutputPlugin.newOutput(factory(task), task, 0,
+                TempFileSpaceImpl.with(tempDir.toPath(), "output-azure-blob"));
+        output.nextFile();
+        output.add(Buffer.wrap("first\n".getBytes(StandardCharsets.UTF_8)));
+        output.nextFile();
+        output.add(Buffer.wrap("second\n".getBytes(StandardCharsets.UTF_8)));
+        output.finish();
+        output.close();
+        output.commit();
+
+        assertEquals(Arrays.asList("PUT /myaccount/my-container/data/000.00.csv", "PUT /myaccount/my-container/data/000.01.csv"), requests);
+        assertEquals(Arrays.asList("first\n", "second\n"), bodies);
+        assertEquals(0, countFiles(tempDir));
+    }
+
+    // The usual case: one file, uploaded once in finish(), as before
+    @Test
+    public void testOneFileIsUploadedOnceInFinish() throws IOException
+    {
+        PluginTask task = sasTask(1, SAS_TOKEN);
+        TransactionalFileOutput output = AzureBlobStorageFileOutputPlugin.newOutput(factory(task), task, 0, tempFileSpace());
+        output.nextFile();
+        output.add(Buffer.wrap("only\n".getBytes(StandardCharsets.UTF_8)));
+        assertTrue(requests.isEmpty());
+
+        output.finish();
+        output.close();
+        output.commit();
+
+        assertEquals(Collections.singletonList("PUT /myaccount/my-container/data/000.00.csv"), requests);
+        assertEquals(Collections.singletonList("only\n"), bodies);
+    }
+
     // --- BLOCK_BLOB
 
     @Test
@@ -456,6 +498,18 @@ public class TestAzureBlobStorageFileOutputErrors
         output.add(Buffer.wrap(content.getBytes(StandardCharsets.UTF_8)));
         output.finish();
         output.commit();
+    }
+
+    private static int countFiles(File dir)
+    {
+        int count = 0;
+        File[] children = dir.listFiles();
+        if (children != null) {
+            for (File child : children) {
+                count += child.isDirectory() ? countFiles(child) : 1;
+            }
+        }
+        return count;
     }
 
     private TempFileSpace tempFileSpace() throws IOException

@@ -72,7 +72,11 @@ public class BlobFileOutput implements TransactionalFileOutput
     @Override
     public void nextFile()
     {
-        closeFile();
+        if (output != null) {
+            // Upload the previous file before starting the next one. Before, only the last file of a task was uploaded.
+            closeFile();
+            uploadFile();
+        }
 
         try {
             String suffix = pathSuffix;
@@ -131,7 +135,7 @@ public class BlobFileOutput implements TransactionalFileOutput
 
         final Exception[] lastFailure = new Exception[1];
         try {
-            return RetryExecutor.builder()
+            RetryExecutor.builder()
                     .withRetryLimit(maxConnectionRetry)
                     .withInitialRetryWaitMillis(500)
                     .withMaxRetryWaitMillis(30 * 1000)
@@ -179,6 +183,9 @@ public class BlobFileOutput implements TransactionalFileOutput
                             lastFailure[0] = lastException;
                         }
                     });
+            // Uploaded: don't upload it again in finish()
+            filePath = null;
+            return null;
         }
         catch (RetryGiveupException ex) {
             throw AzureErrors.giveUpError(ex.getCause(), lastFailure[0]);

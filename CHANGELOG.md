@@ -3,6 +3,7 @@
 * [maintenance] A failure to get an access token because of a wrong tenant ID, client ID or client secret, or another error of Microsoft Entra ID that is not temporary, is not retried.
 * [maintenance] The final error of a failed upload is the last failure (not the first). For a request to Azure, it is a `DataException` (was a `RuntimeException`) that includes the HTTP status, the error code and Azure's error details.
 * [maintenance] With `service_principal` or `sas_token`, the container check at the start is skipped with a warning when the credentials cannot read the container's properties (e.g. a container SAS).
+* [maintenance] Fix only the last file of a task being uploaded when a task writes more than one file (the default blob type). A task that writes one file is uploaded as before.
 * [maintenance] `BLOCK_BLOB`: the block list commit is retried like the blocks, and `abort` logs a warning instead of failing when it cannot delete the uncommitted blocks.
 
 ## 0.2.1 - 2022-03-30
