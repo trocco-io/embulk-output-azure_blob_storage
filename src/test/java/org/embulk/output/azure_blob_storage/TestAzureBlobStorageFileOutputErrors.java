@@ -5,7 +5,6 @@ import com.microsoft.azure.storage.RetryNoRetry;
 import com.microsoft.azure.storage.SendingRequestEvent;
 import com.microsoft.azure.storage.StorageEvent;
 import com.microsoft.azure.storage.StorageException;
-import com.microsoft.azure.storage.StorageExtendedErrorInformation;
 import com.microsoft.azure.storage.blob.CloudBlobClient;
 import com.sun.net.httpserver.HttpServer;
 import org.embulk.config.ConfigException;
@@ -226,17 +225,54 @@ public class TestAzureBlobStorageFileOutputErrors
         assertSame(configException, AzureErrors.toUserException(new StorageException("AuthenticationFailed", "auth", 401, null, configException)));
     }
 
+    // The SDK catches an exception thrown before signing and throws this, without sending the request
     @Test
-    public void testFinalErrorShowsTheOriginalErrorOfAFailedTokenRequest()
+    public void testFinalErrorOfAFailedTokenRequestShowsOnlyTheOriginalError()
     {
-        StorageExtendedErrorInformation details = new StorageExtendedErrorInformation();
         RuntimeException tokenError = new ServicePrincipalTokenProvider.RetryableTokenException(
                 "Microsoft Entra ID returned a temporary error (status: 503)", null);
-        RuntimeException ex = AzureErrors.toUserException(
-                new StorageException("AuthenticationFailed", "Server failed to authenticate the request.", 401, details, tokenError));
+        RuntimeException ex = AzureErrors.toUserException(new StorageException(null, tokenError.getMessage(), 306, null, tokenError));
         assertTrue(ex instanceof DataException);
-        assertTrue(ex.getMessage(), ex.getMessage().contains("status: 401"));
-        assertTrue(ex.getMessage(), ex.getMessage().contains("Caused by: Microsoft Entra ID returned a temporary error (status: 503)"));
+        assertEquals("Microsoft Entra ID returned a temporary error (status: 503)", ex.getMessage());
+    }
+
+    // What the SDK really throws when the listener fails, checked through an upload
+    @Test
+    public void testFinalErrorOfAnUploadWhoseTokenRequestFailed()
+    {
+        PluginTask task = sasTask(0);
+        Supplier<OperationContext> context = tokenContext(stubProvider(new AtomicInteger(),
+                () -> new ServicePrincipalTokenProvider.RetryableTokenException("Microsoft Entra ID returned a temporary error (status: 503)", null)));
+
+        DataException ex = assertThrows(DataException.class, () -> upload(factory(task, null), context, task, "a,b\n"));
+        assertEquals("Microsoft Entra ID returned a temporary error (status: 503)", ex.getMessage());
+        assertTrue(requests.isEmpty());
+    }
+
+    // A temporary error of Entra ID when the job starts is not reported as a configuration error
+    @Test
+    public void testTokenErrorInTheContainerCheckIsNotAConfigError()
+    {
+        PluginTask task = sasTask(0);
+        AzureBlobClientFactory factory = new AzureBlobClientFactory(task, null) {
+            @Override
+            URI blobEndpoint()
+            {
+                return URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/myaccount");
+            }
+
+            @Override
+            public OperationContext createOperationContext()
+            {
+                return tokenContext(stubProvider(new AtomicInteger(),
+                        () -> new ServicePrincipalTokenProvider.RetryableTokenException("Microsoft Entra ID returned a temporary error (status: 503)", null))).get();
+            }
+        };
+
+        RuntimeException ex = assertThrows(RuntimeException.class,
+                () -> AzureBlobStorageFileOutputPlugin.createContainerIfNotExists(factory, "my-container"));
+        assertFalse(ex.getClass().getName(), ex instanceof ConfigException);
+        assertEquals("Microsoft Entra ID returned a temporary error (status: 503)", ex.getMessage());
     }
 
     private void upload(AzureBlobClientFactory factory, PluginTask task, String content) throws IOException

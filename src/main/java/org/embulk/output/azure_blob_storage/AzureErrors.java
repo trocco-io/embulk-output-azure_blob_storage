@@ -32,6 +32,10 @@ final class AzureErrors
         if (configException != null) {
             return configException;
         }
+        if (cause instanceof StorageException && failedBeforeSending((StorageException) cause)) {
+            // The status and the message of such an exception are not from Azure, so show only the original error.
+            return new DataException(cause.getCause().getMessage(), cause);
+        }
         if (cause instanceof StorageException) {
             StorageException storageException = (StorageException) cause;
             StringBuilder message = new StringBuilder(String.format("Azure Blob Storage request failed (status: %d, code: %s): %s",
@@ -41,8 +45,7 @@ final class AzureErrors
                 details.getAdditionalDetails().forEach((key, values) ->
                         endSentence(message).append(" ").append(key).append(": ").append(String.join(", ", values)));
             }
-            // When something fails inside the SDK before the request is sent (e.g. getting the access token), the SDK
-            // still reports the status of the request it then sent without a token. Show the original error too.
+            // e.g. a network error while reading the response
             Throwable inner = storageException.getCause();
             if (inner != null && !(inner instanceof StorageException) && inner.getMessage() != null) {
                 endSentence(message).append(" Caused by: ").append(inner.getMessage());
@@ -57,6 +60,33 @@ final class AzureErrors
             return (RuntimeException) cause;
         }
         return new RuntimeException(cause);
+    }
+
+    /**
+     * True when the request was not sent, because something failed while preparing it: the SDK catches an exception
+     * thrown before signing (e.g. while getting the access token) and throws a StorageException with status 306 and
+     * the original exception as the cause.
+     */
+    static boolean failedBeforeSending(StorageException exception)
+    {
+        return exception.getHttpStatusCode() == 306 && exception.getCause() != null
+                && !(exception.getCause() instanceof StorageException) && exception.getCause().getMessage() != null;
+    }
+
+    /**
+     * Returns the error of getting the access token in the cause chain, if any (other than a configuration error).
+     */
+    static ServicePrincipalTokenProvider.TokenRequestException findTokenRequestException(Throwable exception)
+    {
+        for (Throwable e = exception; e != null; e = e.getCause()) {
+            if (e instanceof ServicePrincipalTokenProvider.TokenRequestException) {
+                return (ServicePrincipalTokenProvider.TokenRequestException) e;
+            }
+            if (e.getCause() == e) {
+                break;
+            }
+        }
+        return null;
     }
 
     static ConfigException findConfigException(Throwable exception)

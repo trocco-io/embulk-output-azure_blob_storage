@@ -162,7 +162,7 @@ public class ServicePrincipalTokenProvider
                 throw new ConfigException("Failed to get an access token from Microsoft Entra ID (" + detail + "). "
                         + "Check the tenant ID, client ID and client secret.");
             }
-            throw new RuntimeException("Failed to get an access token from Microsoft Entra ID (" + detail + ").");
+            throw new TokenRequestException("Failed to get an access token from Microsoft Entra ID (" + detail + ").", null);
         }
         catch (IOException ex) {
             throw new RetryableTokenException("Failed to get an access token from Microsoft Entra ID: " + ex.getMessage(), ex);
@@ -233,9 +233,19 @@ public class ServicePrincipalTokenProvider
         }
     }
 
+    // A failure to get a token that is not a configuration error (those are ConfigException).
+    static class TokenRequestException
+            extends RuntimeException
+    {
+        TokenRequestException(String message, Throwable cause)
+        {
+            super(message, cause);
+        }
+    }
+
     // A failure that may go away on retry (network error, 429 or 5xx).
     static class RetryableTokenException
-            extends RuntimeException
+            extends TokenRequestException
     {
         RetryableTokenException(String message, Throwable cause)
         {

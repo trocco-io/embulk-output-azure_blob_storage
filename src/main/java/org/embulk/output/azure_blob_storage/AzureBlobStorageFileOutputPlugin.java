@@ -126,6 +126,10 @@ public class AzureBlobStorageFileOutputPlugin
                 log.warn("Skipped checking that container {} exists, because the credentials are not allowed to read it ({}).",
                         containerName, ex.getErrorCode());
             }
+            else if (AzureErrors.findTokenRequestException(ex) != null) {
+                // Microsoft Entra ID failed (e.g. temporarily), which is not a configuration error
+                throw AzureErrors.toUserException(ex);
+            }
             else {
                 throw new ConfigException(AzureErrors.toUserException(ex).getMessage(), ex);
             }
