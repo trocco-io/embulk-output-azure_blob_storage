@@ -88,12 +88,17 @@ public class AzureBlobStorageFileOutputPlugin
 
     private static final Logger log =  LoggerFactory.getLogger(AzureBlobStorageFileOutputPlugin.class);
 
-    // Returned when the credentials are valid but cannot read the container's properties: a container (service) SAS
-    // never can (AuthorizationFailure), nor can an account SAS without the container resource type or the read
-    // permission, or a role that only allows writing blobs. Writing blobs may still be allowed. AuthorizationFailure
-    // is also returned when a firewall rule blocks the request, so it is not skipped for account_key, as before.
-    private static final List<String> PERMISSION_ERROR_CODES = Arrays.asList(
+    // Returned when the credentials are valid but cannot read the container's properties. Writing blobs may still be
+    // allowed, so the container check is skipped.
+    // - sas_token: a container (service) SAS never can (AuthorizationFailure), nor can an account SAS without the
+    //   container resource type (AuthorizationResourceTypeMismatch) or the read permission (AuthorizationPermissionMismatch)
+    // - service_principal: a role that only allows writing blobs (AuthorizationPermissionMismatch)
+    // AuthorizationFailure is also returned when a firewall or network rule blocks the request, so it is skipped only
+    // for sas_token, where a container SAS always gets it. account_key is never skipped, as before.
+    private static final List<String> SAS_TOKEN_PERMISSION_ERROR_CODES = Arrays.asList(
             "AuthorizationPermissionMismatch", "AuthorizationResourceTypeMismatch", "AuthorizationFailure");
+    private static final List<String> SERVICE_PRINCIPAL_PERMISSION_ERROR_CODES = Arrays.asList(
+            "AuthorizationPermissionMismatch");
 
     public static final ConfigMapperFactory CONFIG_MAPPER_FACTORY = ConfigMapperFactory
         .builder()
@@ -127,8 +132,7 @@ public class AzureBlobStorageFileOutputPlugin
             exists = container.exists(null, null, clientFactory.createOperationContext());
         }
         catch (StorageException ex) {
-            if (clientFactory.getAuthMethod() != AuthMethod.ACCOUNT_KEY
-                    && ex.getHttpStatusCode() == 403 && PERMISSION_ERROR_CODES.contains(ex.getErrorCode())) {
+            if (ex.getHttpStatusCode() == 403 && cannotReadContainer(clientFactory.getAuthMethod(), ex.getErrorCode())) {
                 // Uploading fails later if writing is not allowed or the container doesn't exist.
                 log.warn("Skipped checking that container {} exists, because the credentials are not allowed to read its properties ({}).",
                         containerName, ex.getErrorCode());
@@ -150,6 +154,18 @@ public class AzureBlobStorageFileOutputPlugin
                         containerName, AzureErrors.toUserException(ex).getMessage()), ex);
             }
             throw containerCheckError(ex);
+        }
+    }
+
+    private static boolean cannotReadContainer(AuthMethod authMethod, String errorCode)
+    {
+        switch (authMethod) {
+            case SAS_TOKEN:
+                return SAS_TOKEN_PERMISSION_ERROR_CODES.contains(errorCode);
+            case SERVICE_PRINCIPAL:
+                return SERVICE_PRINCIPAL_PERMISSION_ERROR_CODES.contains(errorCode);
+            default:
+                return false;
         }
     }
 

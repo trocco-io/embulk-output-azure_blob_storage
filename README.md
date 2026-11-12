@@ -37,7 +37,7 @@ First, create Azure [Storage Account](https://azure.microsoft.com/en-us/document
 
 container will create automatically when container doesn't exists.
 
-With `service_principal` or `sas_token`, if the credentials cannot read the container's properties (a container SAS never can; nor can an account SAS without the container resource type or the read permission, or a role that only allows writing blobs), this check is skipped with a warning, and the upload fails if the container doesn't exist. If the container doesn't exist and the credentials cannot create it, the transfer fails at the start.
+With `service_principal` or `sas_token`, if the credentials cannot read the container's properties (a container SAS never can; nor can an account SAS without the container resource type or the read permission, or a role that only allows writing blobs), this check is skipped with a warning, and the upload fails if the container doesn't exist. A request blocked by a firewall or network rule of the storage account is not skipped, except with `sas_token`, where Azure returns the same error for a container SAS. If the container doesn't exist and the credentials cannot create it, the transfer fails at the start.
  
 When a container was deleted, a container with same name cannot be created for at least 30 seconds.
 It's a [service specification](https://technet.microsoft.com/en-us/library/dd179408.aspx#Anchor_3) of Azure Blob Storage.

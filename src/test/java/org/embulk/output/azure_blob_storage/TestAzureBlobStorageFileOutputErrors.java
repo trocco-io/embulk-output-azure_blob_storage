@@ -324,6 +324,31 @@ public class TestAzureBlobStorageFileOutputErrors
         }
     }
 
+    // With service_principal, a role that only allows writing blobs gets AuthorizationPermissionMismatch
+    @Test
+    public void testContainerCheckIsSkippedForAServicePrincipalThatCannotReadIt()
+    {
+        queuedResponses.add("403|AuthorizationPermissionMismatch");
+
+        AzureBlobStorageFileOutputPlugin.createContainerIfNotExists(
+                servicePrincipalFactory(servicePrincipalTask(1, null), new AtomicInteger(), call -> null), "my-container");
+
+        assertEquals(1, requests.size());
+    }
+
+    // With service_principal, AuthorizationFailure almost always means that a firewall or network rule blocks the
+    // request: fail at the start, with the hint, instead of retrying every upload
+    @Test
+    public void testContainerCheckIsNotSkippedForAServicePrincipalBlockedByAFirewall()
+    {
+        queuedResponses.add("403|AuthorizationFailure");
+
+        ConfigException ex = assertThrows(ConfigException.class, () -> AzureBlobStorageFileOutputPlugin.createContainerIfNotExists(
+                servicePrincipalFactory(servicePrincipalTask(1, null), new AtomicInteger(), call -> null), "my-container"));
+        assertTrue(ex.getMessage(), ex.getMessage().contains("code: AuthorizationFailure"));
+        assertTrue(ex.getMessage(), ex.getMessage().contains("firewall"));
+    }
+
     // AuthorizationFailure is also returned when a firewall rule blocks the request: account_key fails as before
     @Test
     public void testContainerCheckIsNotSkippedForAccountKey()
@@ -425,6 +450,8 @@ public class TestAzureBlobStorageFileOutputErrors
         upload(factory(task), task, "a,b\n");
 
         assertEquals(3, requests.size());
+        // LATEST also finds a block that the first commit already committed (if its response was lost)
+        assertTrue(bodies.get(2), bodies.get(2).contains("<Latest>") && !bodies.get(2).contains("<Uncommitted>"));
     }
 
     // abort() runs after the task failed: it deletes the uncommitted blocks, with the token on each request

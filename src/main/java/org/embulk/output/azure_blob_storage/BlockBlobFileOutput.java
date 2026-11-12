@@ -191,7 +191,9 @@ public class BlockBlobFileOutput implements TransactionalFileOutput
                 try (BufferedInputStream in = new BufferedInputStream(new FileInputStream(file))) {
                     blockBlob.uploadBlock(blockId, in, file.length(), null, null, operationContext.get());
                 }
-                blocks.add(new BlockEntry(blockId, BlockSearchMode.UNCOMMITTED));
+                // LATEST also finds the block once it is committed, so retrying a commit whose response was lost (but
+                // which reached Azure) commits the same list again instead of failing with InvalidBlockList
+                blocks.add(new BlockEntry(blockId, BlockSearchMode.LATEST));
                 logger.info("Uploaded block file: {}, id: {}, size ~ {}kb", file.getName(), blockId, file.length() / 1024);
                 blockIndex++;
             });
