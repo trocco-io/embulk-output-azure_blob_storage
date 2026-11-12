@@ -61,8 +61,12 @@ final class AzureErrors
                 endSentence(message).append(" The credentials are valid but not allowed to do this: give the service principal "
                         + "a data role that can write blobs (e.g. Storage Blob Data Contributor), or use a SAS token with the needed permissions.");
             }
+            else if ("AuthorizationFailure".equals(storageException.getErrorCode())) {
+                endSentence(message).append(" Check the permissions of the credentials (e.g. of the SAS token), and the firewall "
+                        + "and network rules of the storage account, which may block this host.");
+            }
             else if (status == 401 || status == 403) {
-                endSentence(message).append(" Check the credentials for 'auth_method' (wrong or expired key or SAS token, or missing role or permission).");
+                endSentence(message).append(" Check the credentials (wrong or expired key or SAS token, or missing role or permission).");
             }
             return new DataException(message.toString(), storageException);
         }
@@ -80,7 +84,9 @@ final class AzureErrors
     {
         Throwable failure = lastFailure != null ? lastFailure : firstFailure;
         RuntimeException error = toUserException(failure);
-        if (firstFailure != null && firstFailure != failure && error != firstFailure) {
+        // A ConfigException may be the same instance for all the tasks (see ServicePrincipalTokenProvider), so nothing
+        // is added to it
+        if (firstFailure != null && firstFailure != failure && error != firstFailure && !(error instanceof ConfigException)) {
             error.addSuppressed(firstFailure);
         }
         return error;

@@ -283,6 +283,17 @@ public class TestAzureBlobStorageFileOutputErrors
         assertTrue(ex.getMessage(), ex.getMessage().contains("Storage Blob Data Contributor"));
     }
 
+    // Also returned when a firewall or network rule of the storage account blocks the request
+    @Test
+    public void testFinalErrorOfAuthorizationFailureMentionsTheFirewall()
+    {
+        queuedResponses.add("403|AuthorizationFailure");
+        PluginTask task = sasTask(0, SAS_TOKEN);
+
+        DataException ex = assertThrows(DataException.class, () -> upload(factory(task), task, "a,b\n"));
+        assertTrue(ex.getMessage(), ex.getMessage().contains("firewall"));
+    }
+
     @Test
     public void testContainerIsCreatedWhenMissing()
     {

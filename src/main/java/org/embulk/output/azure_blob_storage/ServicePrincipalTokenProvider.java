@@ -38,8 +38,9 @@ public class ServicePrincipalTokenProvider
     static final int MAX_ATTEMPTS = 3;
     // After a failure, don't ask Entra ID again for this long: return the current token while it is valid, or the same
     // error. Without it, every request of every task sharing this provider would run all the attempts again while
-    // holding the lock, which nearly stops the transfer (or makes it look hung) while Entra ID is unavailable.
-    static final long REFRESH_RETRY_INTERVAL_MILLIS = 30 * 1000L;
+    // holding the lock, which nearly stops the transfer (or makes it look hung) while Entra ID is unavailable. Kept
+    // short, so that the plugin's retries with a small max_connection_retry still reach Entra ID again.
+    static final long REFRESH_RETRY_INTERVAL_MILLIS = 10 * 1000L;
     private static final long RETRY_WAIT_MILLIS = 1000L;
     private static final int TIMEOUT_MILLIS = 30 * 1000;
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -80,7 +81,8 @@ public class ServicePrincipalTokenProvider
      * If getting a new one fails while the current one is still valid, the current one is returned, so a temporary
      * error of Entra ID does not stop a transfer. After a failure, Entra ID is not asked again for
      * REFRESH_RETRY_INTERVAL_MILLIS: the current token is returned while it is valid, or else the same error is thrown.
-     * The callers retry with backoff (max_connection_retry), so a later retry asks Entra ID again.
+     * The uploads are retried with backoff (max_connection_retry), so a retry after that interval asks Entra ID
+     * again. The container check at the start is not retried.
      */
     public synchronized String getToken()
     {

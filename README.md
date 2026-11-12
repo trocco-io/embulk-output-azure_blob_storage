@@ -31,7 +31,7 @@ First, create Azure [Storage Account](https://azure.microsoft.com/en-us/document
 
 - `account_key`: the storage account's access key.
 - `service_principal`: a Microsoft Entra ID application with a client secret. Give it a role that can write blobs, e.g. "Storage Blob Data Contributor", on the storage account or the container. The access token is refreshed automatically during long transfers.
-- `sas_token`: an account SAS or a container SAS that allows writing (and creating) blobs (`w`, `c`; also `d` so that the uncommitted blocks of a failed `BLOCK_BLOB` upload can be deleted). A SAS has an expiry time: the transfer fails after it.
+- `sas_token`: an account SAS or a container SAS that allows writing (and creating) blobs (`w`, `c`; also `r` and `d` so that the uncommitted blocks of a failed `BLOCK_BLOB` upload can be deleted). A SAS has an expiry time: the transfer fails after it.
 
 ### Auto create container
 
