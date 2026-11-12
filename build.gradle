@@ -6,6 +6,7 @@ plugins {
     id 'maven-publish'
     id "signing"
     id "org.embulk.embulk-plugins" version "0.4.2"
+    id "com.palantir.git-version" version "3.0.0"
 }
 
 repositories {
@@ -15,9 +16,17 @@ repositories {
 sourceCompatibility = 1.8
 targetCompatibility = 1.8
 
-group = "org.embulk"
+group = "trocco-io"
 description = "Dumps records to Microsoft Azure Blob Storage."
-version = "0.2.1-SNAPSHOT"
+// The version comes from the tag (e.g. v0.2.1.trocco.0.1.0) so that the gem published from a tag has its name
+version = {
+    def vd = versionDetails()
+    if (vd.commitDistance == 0 && vd.lastTag ==~ /^v?[0-9]+\.[0-9]+\.[0-9]+([.-][.a-zA-Z0-9-]+)?/) {
+        vd.lastTag.replaceFirst(/^v/, "")
+    } else {
+        "0.0.0.${vd.gitHash}"
+    }
+}()
 
 def embulkVersion = '0.10.29'
 
