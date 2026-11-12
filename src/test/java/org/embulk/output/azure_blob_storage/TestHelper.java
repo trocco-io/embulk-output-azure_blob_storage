@@ -46,9 +46,9 @@ public class TestHelper
      *   AZURE_CONTAINER_DIRECTORY
      */
     static {
-        AZURE_ACCOUNT_NAME = System.getenv("AZURE_ACCOUNT_NAME");
-        AZURE_ACCOUNT_KEY = System.getenv("AZURE_ACCOUNT_KEY");
-        AZURE_CONTAINER = System.getenv("AZURE_CONTAINER");
+        AZURE_ACCOUNT_NAME = getenv("AZURE_ACCOUNT_NAME");
+        AZURE_ACCOUNT_KEY = getenv("AZURE_ACCOUNT_KEY");
+        AZURE_CONTAINER = getenv("AZURE_CONTAINER");
         // skip test cases, if environment variables are not set.
         AZURE_CONTAINER_DIRECTORY = System.getenv("AZURE_CONTAINER_DIRECTORY") != null ? getDirectory(System.getenv("AZURE_CONTAINER_DIRECTORY")) : getDirectory("");
         AZURE_PATH_PREFIX = AZURE_CONTAINER_DIRECTORY + "sample_";
@@ -58,6 +58,13 @@ public class TestHelper
 
     private TestHelper()
     {
+    }
+
+    // GitHub Actions passes a secret that is not set as an empty string, so treat it as not set and skip the tests
+    private static String getenv(String name)
+    {
+        String value = System.getenv(name);
+        return value == null || value.isEmpty() ? null : value;
     }
 
     public static byte[] convertInputStreamToByte(InputStream is) throws IOException
