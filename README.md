@@ -15,16 +15,29 @@
 First, create Azure [Storage Account](https://azure.microsoft.com/en-us/documentation/articles/storage-create-storage-account/).
 
 - **account_name**: storage account name (string, required)
-- **account_key**: primary access key (string, required)
+- **auth_method**: how to authenticate: `account_key`, `service_principal` or `sas_token` (string, default: `account_key`)
+- **account_key**: primary access key (string, required when `auth_method` is `account_key`)
+- **tenant_id**: directory (tenant) ID of the service principal (string, required when `auth_method` is `service_principal`)
+- **client_id**: application (client) ID of the service principal (string, required when `auth_method` is `service_principal`)
+- **client_secret**: client secret of the service principal (string, required when `auth_method` is `service_principal`)
+- **sas_token**: SAS token, with or without the leading `?` (string, required when `auth_method` is `sas_token`)
 - **container**: container name (string, required)
 - **path_prefix**: prefix of target keys (string, required) (string, required)
 - **file_ext**: e.g. "csv.gz, json.gz" (string, required)
 - **blob_type**: `BLOCK_BLOB | PAGE_BLOB | APPEND_BLOB | UNSPECIFIED`, currently supports BLOCK_BLOB, other types will fall back into `UNSPECIFIED` (string, default `UNSPECIFIED`)
 
 
+### Authentication
+
+- `account_key`: the storage account's access key.
+- `service_principal`: a Microsoft Entra ID application with a client secret. Give it a role that can write blobs, e.g. "Storage Blob Data Contributor", on the storage account or the container. The access token is refreshed automatically during long transfers.
+- `sas_token`: an account SAS or a container SAS that allows writing (and creating) blobs (`w`, `c`; also `r` and `d` so that the uncommitted blocks of a failed `BLOCK_BLOB` upload can be deleted). A SAS has an expiry time: the transfer fails after it.
+
 ### Auto create container
 
 container will create automatically when container doesn't exists.
+
+With `service_principal` or `sas_token`, if the credentials cannot read the container's properties (a container SAS never can; nor can an account SAS without the container resource type or the read permission, or a role that only allows writing blobs), this check is skipped with a warning, and the upload fails if the container doesn't exist. A request blocked by a firewall or network rule of the storage account is not skipped, except with `sas_token`, where Azure returns the same error for a container SAS. If the container doesn't exist and the credentials cannot create it, the transfer fails at the start.
  
 When a container was deleted, a container with same name cannot be created for at least 30 seconds.
 It's a [service specification](https://technet.microsoft.com/en-us/library/dd179408.aspx#Anchor_3) of Azure Blob Storage.
@@ -45,6 +58,26 @@ out:
     header_line: false
   encoders:
   - {type: gzip}
+```
+
+With a service principal or a SAS token:
+
+```yaml
+out:
+  type: azure_blob_storage
+  account_name: myaccount
+  auth_method: service_principal
+  tenant_id: 00000000-0000-0000-0000-000000000000
+  client_id: 00000000-0000-0000-0000-000000000000
+  client_secret: my-client-secret
+  # or
+  # auth_method: sas_token
+  # sas_token: sv=2022-11-02&ss=b&srt=co&sp=rwdlc&se=2026-12-31T00:00:00Z&spr=https&sig=...
+  container: my-container
+  path_prefix: logs/csv-
+  file_ext: csv
+  formatter:
+    type: csv
 ```
 
 

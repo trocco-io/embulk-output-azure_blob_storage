@@ -86,7 +86,7 @@ public class TestBlockBlobFileOutput
         AzureBlobStorageFileOutputPlugin.PluginTask task = CONFIG_MAPPER.map(configSource, AzureBlobStorageFileOutputPlugin.PluginTask.class);
         Schema schema = CONFIG_MAPPER.map(configSource.getNested("parser"), CsvParserPlugin.PluginTask.class).getSchemaConfig().toSchema();
 
-        final CloudBlobClient blobClient = newAzureClient(task.getAccountName(), task.getAccountKey());
+        final CloudBlobClient blobClient = newAzureClient(task.getAccountName(), task.getAccountKey().get());
         final TempFileSpace tempFileSpace = TempFileSpaceImpl.with(testFolder.newFolder().toPath(), "output-azure-blob");
 
         BlockBlobFileOutput output = new BlockBlobFileOutput(blobClient, task, 0, tempFileSpace);
@@ -120,7 +120,7 @@ public class TestBlockBlobFileOutput
         AzureBlobStorageFileOutputPlugin.PluginTask task = CONFIG_MAPPER.map(configSource, AzureBlobStorageFileOutputPlugin.PluginTask.class);
         Schema schema = CONFIG_MAPPER.map(configSource.getNested("parser"), CsvParserPlugin.PluginTask.class).getSchemaConfig().toSchema();
 
-        final CloudBlobClient blobClient = newAzureClient(task.getAccountName(), task.getAccountKey());
+        final CloudBlobClient blobClient = newAzureClient(task.getAccountName(), task.getAccountKey().get());
 
         final TempFileSpace tempFileSpace = TempFileSpaceImpl.with(testFolder.newFolder().toPath(), "output-azure-blob");
 

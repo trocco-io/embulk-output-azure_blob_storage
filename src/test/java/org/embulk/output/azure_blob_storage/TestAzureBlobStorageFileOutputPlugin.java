@@ -83,7 +83,7 @@ public class TestAzureBlobStorageFileOutputPlugin
         PluginTask task = CONFIG_MAPPER.map(config, PluginTask.class);
 
         assertEquals(AZURE_ACCOUNT_NAME, task.getAccountName());
-        assertEquals(AZURE_ACCOUNT_KEY, task.getAccountKey());
+        assertEquals(AZURE_ACCOUNT_KEY, task.getAccountKey().get());
         assertEquals(AZURE_CONTAINER, task.getContainer());
         assertEquals(10, task.getMaxConnectionRetry());
     }
